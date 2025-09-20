@@ -1,0 +1,101 @@
+#!/usr/bin/env python3
+"""
+Lab 2.2 – Gripper sequence (multi-pick/place)
+Forward: 1 -> 2 -> 4 -> 3
+Return : 4 -> 3 -> 2 -> 1  (back to original pick spots)
+Reduced speed + slight rotation added for pick/place 3 & 4.
+"""
+
+import time, argparse
+
+# Prefer pydobot; fall back to pydobot2
+try:
+    from pydobot.dobot import MODE_PTP
+    import pydobot as dobot_mod
+except Exception:
+    from pydobot2.dobot import MODE_PTP
+    import pydobot2 as dobot_mod
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--port", default="/dev/ttyACM0", help="Serial device (e.g., /dev/ttyACM0)")
+    ap.add_argument("--hover", type=float, default=30.0, help="Hover height (mm)")
+    ap.add_argument("--v", type=int, default=200, help="Linear speed (reduced)")
+    ap.add_argument("--a", type=int, default=200, help="Linear accel (reduced)")
+    ap.add_argument("--close_dwell", type=float, default=0.80, help="Wait after gripper CLOSE at pick (s)")
+    ap.add_argument("--open_dwell",  type=float, default=0.35, help="Wait after gripper OPEN at place (s)")
+    ap.add_argument("--settle", type=float, default=0.50, help="Settle time at touchdown before grip (s)")
+    args = ap.parse_args()
+
+    # ===== Waypoints (your measured values) =====
+    HOME      = dict(x=239.59, y=0.00,   z=149.46, r=  0.00)
+
+    ATPICK1   = dict(x=308.92, y=-96.18, z=-12.77, r=-17.29)
+    ATPLACE1  = dict(x=316.58, y= 7.83, z=-12.77, r= 1.42)
+
+    ATPICK2   = dict(x=254.48, y=-93.64, z=-12.77, r=-20.20)
+    ATPLACE2  = dict(x=258.77, y= 6.47, z=-12.77, r= 1.43)
+
+    # 🔄 Add slight rotation (+10°) for pick/place 3
+    ATPICK3   = dict(x=248.95, y=-31.49, z=-12.77, r=  3.00)   # was -7.20
+    ATPLACE3  = dict(x=252.64, y= 58.06, z=-12.77, r= 12.94)   # was 10.11
+
+    # 🔄 Add slight rotation (+10°) for pick/place 4
+    ATPICK4   = dict(x=309.60, y=-31.26, z=-12.77, r=  5.00)   # was -5.76
+    ATPLACE4  = dict(x=312.88, y= 63.74, z=-12.77, r= 11.51)   # was 12.21
+    # ============================================
+
+    # Indexable dicts for clean ordering
+    P = {1: ATPICK1, 2: ATPICK2, 3: ATPICK3, 4: ATPICK4}
+    Q = {1: ATPLACE1,2: ATPLACE2,3: ATPLACE3,4: ATPLACE4}
+
+    def hover(pt): return {**pt, "z": pt["z"] + args.hover}
+    PH = {i: hover(P[i]) for i in P}
+    QH = {i: hover(Q[i]) for i in Q}
+
+    dev = dobot_mod.Dobot(port=args.port)
+    try:
+        dev.speed(args.v, args.a)
+
+        # Print current pose
+        pose, _ = dev.get_pose()
+        print(f"Pose: X={pose.x:.2f} Y={pose.y:.2f} Z={pose.z:.2f} R={pose.r:.2f}")
+
+        # Home and start OPEN
+        dev.home(); time.sleep(1.0)
+        dev.grip(False); time.sleep(args.open_dwell)
+
+        def mov(pt, mode=MODE_PTP.MOVJ_XYZ, wait=0.35):
+            dev.move_to(mode=int(mode), **pt); time.sleep(wait)
+
+        def pick_then_lift(above_pt, at_pt):
+            # Approach above pick (ensure OPEN), descend, CLOSE, lift
+            mov(above_pt)
+            dev.grip(False); time.sleep(args.open_dwell)
+            mov(at_pt); time.sleep(args.settle)
+            dev.grip(True); time.sleep(args.close_dwell)
+            mov(above_pt)
+
+        def place_then_release(above_pt, at_pt):
+            # Approach above place, descend, OPEN to release, lift
+            mov(above_pt); mov(at_pt); time.sleep(args.settle)
+            dev.grip(False); time.sleep(args.open_dwell)
+            mov(above_pt)
+
+        # ----------------- FORWARD: 1 -> 2 -> 4 -> 3 -----------------
+        for i in [1, 2, 4, 3]:
+            pick_then_lift(PH[i], P[i])
+            place_then_release(QH[i], Q[i])
+
+        # ----------------- RETURN: 4 -> 3 -> 2 -> 1 ------------------
+        for i in [4, 3, 2, 1]:
+            pick_then_lift(QH[i], Q[i])     # pick from the place spot
+            place_then_release(PH[i], P[i]) # return to original pick spot
+
+        mov(HOME)
+        print("Forward and return sequences complete ✅")
+    finally:
+        dev.close()
+
+if __name__ == "__main__":
+    main()
